@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 	This script contains the functions and logic engine for the Deploy-Application.ps1 script.
 .DESCRIPTION
@@ -64,9 +64,9 @@ Param (
 [string]$appDeployMainScriptFriendlyName = 'App Deploy Toolkit Main'
 
 ## Variables: Script Info
-[version]$appDeployMainScriptVersion = [version]'3.6.8'
+[version]$appDeployMainScriptVersion = [version]'3.6.9'
 [version]$appDeployMainScriptMinimumConfigVersion = [version]'3.6.8'
-[string]$appDeployMainScriptDate = '02/05/2016'
+[string]$appDeployMainScriptDate = '02/12/2017'
 [hashtable]$appDeployMainScriptParameters = $PSBoundParameters
 
 ## Variables: Datetime and Culture
@@ -87,7 +87,7 @@ Param (
 [string]$envCommonProgramFilesX86 = ${env:CommonProgramFiles(x86)}
 [string]$envCommonDesktop   = $envShellFolders | Select-Object -ExpandProperty 'Common Desktop' -ErrorAction 'SilentlyContinue'
 [string]$envCommonDocuments = $envShellFolders | Select-Object -ExpandProperty 'Common Documents' -ErrorAction 'SilentlyContinue'
-[string]$envCommonPrograms  = $envShellFolders | Select-Object -ExpandProperty 'Common Programs' -ErrorAction 'SilentlyContinue'
+[string]$envCommonStartMenuPrograms  = $envShellFolders | Select-Object -ExpandProperty 'Common Programs' -ErrorAction 'SilentlyContinue'
 [string]$envCommonStartMenu = $envShellFolders | Select-Object -ExpandProperty 'Common Start Menu' -ErrorAction 'SilentlyContinue'
 [string]$envCommonStartUp   = $envShellFolders | Select-Object -ExpandProperty 'Common Startup' -ErrorAction 'SilentlyContinue'
 [string]$envCommonTemplates = $envShellFolders | Select-Object -ExpandProperty 'Common Templates' -ErrorAction 'SilentlyContinue'
@@ -155,12 +155,13 @@ Catch { }
 [psobject]$envOS = Get-WmiObject -Class 'Win32_OperatingSystem' -ErrorAction 'SilentlyContinue'
 [string]$envOSName = $envOS.Caption.Trim()
 [string]$envOSServicePack = $envOS.CSDVersion
-[version]$envOSVersion = [Environment]::OSVersion.Version
+[version]$envOSVersion = $envOS.Version
 [string]$envOSVersionMajor = $envOSVersion.Major
 [string]$envOSVersionMinor = $envOSVersion.Minor
 [string]$envOSVersionBuild = $envOSVersion.Build
-[string]$envOSVersionRevision = $envOSVersion.Revision
-[string]$envOSVersion = $envOSVersion.ToString()
+[string]$envOSVersionRevision = ,((Get-ItemProperty -Path 'HKLM:SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name 'BuildLabEx' -ErrorAction 'SilentlyContinue').BuildLabEx -split '\.') | ForEach-Object { $_[1] }
+If ($envOSVersionRevision -notmatch '^[\d\.]+$') { $envOSVersionRevision = '' }
+If ($envOSVersionRevision) { [string]$envOSVersion = "$($envOSVersion.ToString()).$envOSVersionRevision" } Else { "$($envOSVersion.ToString())" }
 #  Get the operating system type
 [int32]$envOSProductType = $envOS.ProductType
 [boolean]$IsServerOS = [boolean]($envOSProductType -eq 3)
@@ -173,7 +174,7 @@ Switch ($envOSProductType) {
 	Default { [string]$envOSProductTypeName = 'Unknown' }
 }
 #  Get the OS Architecture
-[boolean]$Is64Bit = [boolean]((Get-WmiObject -Class 'Win32_Processor' | Where-Object { $_.DeviceID -eq 'CPU0' } | Select-Object -ExpandProperty 'AddressWidth') -eq 64)
+[boolean]$Is64Bit = [boolean]((Get-WmiObject -Class 'Win32_Processor' -ErrorAction 'SilentlyContinue' | Where-Object { $_.DeviceID -eq 'CPU0' } | Select-Object -ExpandProperty 'AddressWidth') -eq 64)
 If ($Is64Bit) { [string]$envOSArchitecture = '64-bit' } Else { [string]$envOSArchitecture = '32-bit' }
 
 ## Variables: Current Process Architecture
@@ -262,9 +263,9 @@ If (-not (Test-Path -LiteralPath $appDeployCustomTypesSourceCode -PathType 'Leaf
 #  Get MSI Options
 [Xml.XmlElement]$xmlConfigMSIOptions = $xmlConfig.MSI_Options
 [string]$configMSILoggingOptions = $xmlConfigMSIOptions.MSI_LoggingOptions
-[string]$configMSIInstallParams = $xmlConfigMSIOptions.MSI_InstallParams
-[string]$configMSISilentParams = $xmlConfigMSIOptions.MSI_SilentParams
-[string]$configMSIUninstallParams = $xmlConfigMSIOptions.MSI_UninstallParams
+[string]$configMSIInstallParams = $ExecutionContext.InvokeCommand.ExpandString($xmlConfigMSIOptions.MSI_InstallParams)
+[string]$configMSISilentParams = $ExecutionContext.InvokeCommand.ExpandString($xmlConfigMSIOptions.MSI_SilentParams)
+[string]$configMSIUninstallParams = $ExecutionContext.InvokeCommand.ExpandString($xmlConfigMSIOptions.MSI_UninstallParams)
 [string]$configMSILogDir = $ExecutionContext.InvokeCommand.ExpandString($xmlConfigMSIOptions.MSI_LogPath)
 [int32]$configMSIMutexWaitTime = $xmlConfigMSIOptions.MSI_MutexWaitTime
 #  Get UI Options
@@ -1046,6 +1047,7 @@ Function Exit-Script {
 		New-ZipFile -DestinationArchiveDirectoryPath $configToolkitLogDir -DestinationArchiveFileName $DestinationArchiveFileName -SourceDirectory $logTempFolder -RemoveSourceAfterArchiving
 	}
 	
+	If ($script:notifyIcon) { Try { $script:notifyIcon.Dispose() } Catch {} }
 	## Exit the script, returning the exit code to SCCM
 	If (Test-Path -LiteralPath 'variable:HostInvocation') { $script:ExitCode = $exitCode; Exit } Else { Exit $exitCode }
 }
@@ -1783,7 +1785,7 @@ Function Get-HardwarePlatform {
 	Process {
 		Try {
 			Write-Log -Message 'Retrieve hardware platform information.' -Source ${CmdletName}
-			$hwBios = Get-WmiObject -Class 'Win32_BIOS' -ErrorAction 'Stop' | Select-Object -Property 'Version', 'SerialNnumber'
+			$hwBios = Get-WmiObject -Class 'Win32_BIOS' -ErrorAction 'Stop' | Select-Object -Property 'Version', 'SerialNumber'
 			$hwMakeModel = Get-WMIObject -Class 'Win32_ComputerSystem' -ErrorAction 'Stop' | Select-Object -Property 'Model', 'Manufacturer'
 			
 			If ($hwBIOS.Version -match 'VRTUAL') { $hwType = 'Virtual:Hyper-V' }
@@ -1875,11 +1877,13 @@ Function Get-InstalledApplication {
 	Retrieves information about installed applications by querying the registry. You can specify an application name, a product code, or both.
 	Returns information about application publisher, name & version, product code, uninstall string, install source, location, date, and application architecture.
 .PARAMETER Name
-	The name of the application to retrieve information for. Performs a regex match on the application display name by default.
+	The name of the application to retrieve information for. Performs a contains match on the application display name by default.
 .PARAMETER Exact
 	Specifies that the named application must be matched using the exact name.
 .PARAMETER WildCard
 	Specifies that the named application must be matched using a wildcard search.
+.PARAMETER RegEx
+	Specifies that the named application must be matched using a regular expression search.
 .PARAMETER ProductCode
 	The product code of the application to retrieve information for.
 .PARAMETER IncludeUpdatesAndHotfixes
@@ -1901,6 +1905,8 @@ Function Get-InstalledApplication {
 		[switch]$Exact = $false,
 		[Parameter(Mandatory=$false)]
 		[switch]$WildCard = $false,
+		[Parameter(Mandatory=$false)]
+		[switch]$RegEx = $false,
 		[Parameter(Mandatory=$false)]
 		[ValidateNotNullorEmpty()]
 		[string]$ProductCode,
@@ -2003,10 +2009,17 @@ Function Get-InstalledApplication {
 								Write-Log -Message "Found installed application [$appDisplayName] version [$appDisplayVersion] using wildcard matching for search term [$application]." -Source ${CmdletName}
 							}
 						}
-						#  Check for a regex application name match
+						ElseIf ($RegEx) {
+							#  Check for a regex application name match
+							If ($regKeyApp.DisplayName -match $application) {
+								$applicationMatched = $true
+								Write-Log -Message "Found installed application [$appDisplayName] version [$appDisplayVersion] using regex matching for search term [$application]." -Source ${CmdletName}
+							}
+						}
+						#  Check for a contains application name match
 						ElseIf ($regKeyApp.DisplayName -match [regex]::Escape($application)) {
 							$applicationMatched = $true
-							Write-Log -Message "Found installed application [$appDisplayName] version [$appDisplayVersion] using regex matching for search term [$application]." -Source ${CmdletName}
+							Write-Log -Message "Found installed application [$appDisplayName] version [$appDisplayVersion] using contains matching for search term [$application]." -Source ${CmdletName}
 						}
 						
 						If ($applicationMatched) {
@@ -2075,6 +2088,8 @@ Function Execute-MSI {
 	Overrides the working directory. The working directory is set to the location of the MSI file.
 .PARAMETER SkipMSIAlreadyInstalledCheck
 	Skips the check to determine if the MSI is already installed on the system. Default is: $false.
+.PARAMETER IncludeUpdatesAndHotfixes
+	Include matches against updates and hotfixes in results.
 .PARAMETER PassThru
 	Returns ExitCode, STDOut, and STDErr output from the process.
 .PARAMETER ContinueOnError
@@ -2136,6 +2151,8 @@ Function Execute-MSI {
 		[ValidateNotNullorEmpty()]
 		[switch]$SkipMSIAlreadyInstalledCheck = $false,
 		[Parameter(Mandatory=$false)]
+		[switch]$IncludeUpdatesAndHotfixes = $false,
+		[Parameter(Mandatory=$false)]
 		[ValidateNotNullorEmpty()]
 		[switch]$PassThru = $false,
 		[Parameter(Mandatory=$false)]
@@ -2159,8 +2176,14 @@ Function Execute-MSI {
 			
 			#  Resolve the product code to a publisher, application name, and version
 			Write-Log -Message 'Resolve product code to a publisher, application name, and version.' -Source ${CmdletName}
-			[psobject]$productCodeNameVersion = Get-InstalledApplication -ProductCode $path | Select-Object -Property 'Publisher', 'DisplayName', 'DisplayVersion' -First 1 -ErrorAction 'SilentlyContinue'
 			
+			If ($IncludeUpdatesAndHotfixes) {
+				[psobject]$productCodeNameVersion = Get-InstalledApplication -ProductCode $path -IncludeUpdatesAndHotfixes | Select-Object -Property 'Publisher', 'DisplayName', 'DisplayVersion' -First 1 -ErrorAction 'SilentlyContinue'	
+			}
+			Else {
+				[psobject]$productCodeNameVersion = Get-InstalledApplication -ProductCode $path | Select-Object -Property 'Publisher', 'DisplayName', 'DisplayVersion' -First 1 -ErrorAction 'SilentlyContinue'
+			}
+									
 			#  Build the log file name
 			If (-not $logName) {
 				If ($productCodeNameVersion) {
@@ -2305,8 +2328,13 @@ Function Execute-MSI {
 			If ($SkipMSIAlreadyInstalledCheck) {
 				[boolean]$IsMsiInstalled = $false
 			}
-			Else {
-				[psobject]$MsiInstalled = Get-InstalledApplication -ProductCode $MSIProductCode
+			Else {								
+				If ($IncludeUpdatesAndHotfixes) {
+					[psobject]$MsiInstalled = Get-InstalledApplication -ProductCode $MSIProductCode -IncludeUpdatesAndHotfixes
+				}
+				Else {
+					[psobject]$MsiInstalled = Get-InstalledApplication -ProductCode $MSIProductCode					
+				}				
 				If ($MsiInstalled) { [boolean]$IsMsiInstalled = $true }
 			}
 		}
@@ -2368,11 +2396,13 @@ Function Remove-MSIApplications {
 .PARAMETER AddParameters
 	Adds to the default parameters specified in the XML configuration file. Uninstall default is: "REBOOT=ReallySuppress /QN".
 .PARAMETER FilterApplication
-	Multi-dimensional array that contains property/value/match-type pairs that should be used to filter the list of results returned by Get-InstalledApplication to only those that should be uninstalled.
+	Two-dimensional array that contains one or more (property, value, match-type) sets that should be used to filter the list of results returned by Get-InstalledApplication to only those that should be uninstalled.
 	Properties that can be filtered upon: ProductCode, DisplayName, DisplayVersion, UninstallString, InstallSource, InstallLocation, InstallDate, Publisher, Is64BitApplication
 .PARAMETER ExcludeFromUninstall
-	Multi-dimensional array that contains property/value/match-type pairs that should be excluded from uninstall if found.
+	Two-dimensional array that contains one or more (property, value, match-type) sets that should be excluded from uninstall if found.
 	Properties that can be excluded: ProductCode, DisplayName, DisplayVersion, UninstallString, InstallSource, InstallLocation, InstallDate, Publisher, Is64BitApplication
+.PARAMETER IncludeUpdatesAndHotfixes
+	Include matches against updates and hotfixes in results.
 .PARAMETER LoggingOptions
 	Overrides the default logging options specified in the XML configuration file. Default options are: "/L*v".
 .PARAMETER LogName
@@ -2389,24 +2419,24 @@ Function Remove-MSIApplications {
 	Remove-MSIApplications -Name 'Adobe'
 	Removes all versions of software that match the name "Adobe"
 .EXAMPLE
-	Remove-MSIApplications -Name 'Java 8 Update' -FilterApplication @(
-																		@('Is64BitApplication', $false, 'Exact'),
-																		@('Publisher', 'Oracle Corporation', 'Exact')
+	Remove-MSIApplications -Name 'Java 8 Update' -FilterApplication ('Is64BitApplication', $false, 'Exact'),('Publisher', 'Oracle Corporation', 'Exact')
 																	)
 	Removes all versions of software that match the name "Java 8 Update" where the software is 32-bits and the publisher is "Oracle Corporation".
 .EXAMPLE
-	Remove-MSIApplications -Name 'Java 8 Update' -FilterApplication @(,,@('Publisher', 'Oracle Corporation', 'Exact')) -ExcludeFromUninstall @(,,@('DisplayName', 'Java 8 Update 45', 'RegEx'))
-	Removes all versions of software that match the name "Java 8 Update" and also have "Oracle Corporation" as the Publisher; however, it does not uninstall "Java 8 Update 45" of the software. NOTE: if only specifying a single array in an array of arrays, the array must be preceded by two commas as in this example.
+	Remove-MSIApplications -Name 'Java 8 Update' -FilterApplication (,('Publisher', 'Oracle Corporation', 'Exact')) -ExcludeFromUninstall (,('DisplayName', 'Java 8 Update 45', 'RegEx'))
+	Removes all versions of software that match the name "Java 8 Update" and also have "Oracle Corporation" as the Publisher; however, it does not uninstall "Java 8 Update 45" of the software. 
+	NOTE: if only specifying a single row in the two-dimensional arrays, the array must have the extra parentheses and leading comma as in this example.
 .EXAMPLE
-	Remove-MSIApplications -Name 'Java 8 Update' -ExcludeFromUninstall @(,,@('DisplayName', 'Java 8 Update 45', 'RegEx'))
-	Removes all versions of software that match the name "Java 8 Update"; however, it does not uninstall "Java 8 Update 45" of the software. NOTE: if only specifying a single array in an array of arrays, the array must be preceded by two commas as in this example.
+	Remove-MSIApplications -Name 'Java 8 Update' -ExcludeFromUninstall (,('DisplayName', 'Java 8 Update 45', 'RegEx'))
+	Removes all versions of software that match the name "Java 8 Update"; however, it does not uninstall "Java 8 Update 45" of the software. 
+	NOTE: if only specifying a single row in the two-dimensional array, the array must have the extra parentheses and leading comma as in this example.
 .EXAMPLE
-	Remove-MSIApplications -Name 'Java 8 Update' -ExcludeFromUninstall @(
-																			@('Is64BitApplication', $true, 'Exact'),
-																			@('DisplayName', 'Java 8 Update 45', 'Exact'),
-																			@('DisplayName', 'Java 8 Update 4*', 'WildCard'),
-																			@('DisplayName', 'Java 8 Update 45', 'RegEx')
-																		)
+	Remove-MSIApplications -Name 'Java 8 Update' -ExcludeFromUninstall 
+			('Is64BitApplication', $true, 'Exact'),
+			('DisplayName', 'Java 8 Update 45', 'Exact'),
+			('DisplayName', 'Java 8 Update 4*', 'WildCard'),
+			('DisplayName', 'Java 8 Update 45', 'RegEx')
+		
 	Removes all versions of software that match the name "Java 8 Update"; however, it does not uninstall 64-bit versions of the software, Update 45 of the software, or any Update that starts with 4.
 .NOTES
 	More reading on how to create arrays if having trouble with -FilterApplication or -ExcludeFromUninstall parameter: http://blogs.msdn.com/b/powershell/archive/2007/01/23/array-literals-in-powershell.aspx
@@ -2436,6 +2466,8 @@ Function Remove-MSIApplications {
 		[ValidateNotNullorEmpty()]
 		[array]$ExcludeFromUninstall = @(@()),
 		[Parameter(Mandatory=$false)]
+		[switch]$IncludeUpdatesAndHotfixes = $false,
+		[Parameter(Mandatory=$false)]
 		[ValidateNotNullorEmpty()]
 		[string]$LoggingOptions,
 		[Parameter(Mandatory=$false)]
@@ -2459,7 +2491,10 @@ Function Remove-MSIApplications {
 		[hashtable]$GetInstalledApplicationSplat = @{ Name = $name }
 		If ($Exact) { $GetInstalledApplicationSplat.Add( 'Exact', $Exact) }
 		ElseIf ($WildCard) { $GetInstalledApplicationSplat.Add( 'WildCard', $WildCard) }
-		[psobject[]]$installedApplications = Get-InstalledApplication @GetInstalledApplicationSplat
+		If ($IncludeUpdatesAndHotfixes) { $GetInstalledApplicationSplat.Add( 'IncludeUpdatesAndHotfixes', $IncludeUpdatesAndHotfixes) }
+		
+		[psobject[]]$installedApplications = Get-InstalledApplication @GetInstalledApplicationSplat 
+						
 		Write-Log -Message "Found [$($installedApplications.Count)] application(s) that matched the specified criteria [$Name]." -Source ${CmdletName}
 		
 		## Filter the results from Get-InstalledApplication
@@ -2480,20 +2515,20 @@ Function Remove-MSIApplications {
 					Write-Log -Message "Filter the results to only those that should be uninstalled as specified in parameter [-FilterApplication]." -Source ${CmdletName}
 					[boolean]$addAppToRemoveList = $false
 					ForEach ($Filter in $FilterApplication) {
-						If ($Filter[0][2] -eq 'RegEx') {
-							If ($installedApplication.($Filter[0][0]) -match [regex]::Escape($Filter[0][1])) {
+						If ($Filter[2] -eq 'RegEx') {
+							If ($installedApplication.($Filter[0]) -match [regex]::Escape($Filter[1])) {
 								[boolean]$addAppToRemoveList = $true
 								Write-Log -Message "Preserve removal of application [$($installedApplication.DisplayName) $($installedApplication.Version)] because of regex match against [-FilterApplication] criteria." -Source ${CmdletName}
 							}
 						}
-						ElseIf ($Filter[0][2] -eq 'WildCard') {
-							If ($installedApplication.($Filter[0][0]) -like $Filter[0][1]) {
+						ElseIf ($Filter[2] -eq 'WildCard') {
+							If ($installedApplication.($Filter[0]) -like $Filter[1]) {
 								[boolean]$addAppToRemoveList = $true
 								Write-Log -Message "Preserve removal of application [$($installedApplication.DisplayName) $($installedApplication.Version)] because of wildcard match against [-FilterApplication] criteria." -Source ${CmdletName}
 							}
 						}
-						ElseIf ($Filter[0][2] -eq 'Exact') {
-							If ($installedApplication.($Filter[0][0]) -eq $Filter[0][1]) {
+						ElseIf ($Filter[2] -eq 'Exact') {
+							If ($installedApplication.($Filter[0]) -eq $Filter[1]) {
 								[boolean]$addAppToRemoveList = $true
 								Write-Log -Message "Preserve removal of application [$($installedApplication.DisplayName) $($installedApplication.Version)] because of exact match against [-FilterApplication] criteria." -Source ${CmdletName}
 							}
@@ -2507,20 +2542,20 @@ Function Remove-MSIApplications {
 				#  Filter the results from Get-InstalledApplication to remove those that should never be uninstalled
 				If (($null -ne $ExcludeFromUninstall) -and ($ExcludeFromUninstall.Count)) {
 					ForEach ($Exclude in $ExcludeFromUninstall) {
-						If ($Exclude[0][2] -eq 'RegEx') {
-							If ($installedApplication.($Exclude[0][0]) -match [regex]::Escape($Exclude[0][1])) {
+						If ($Exclude[2] -eq 'RegEx') {
+							If ($installedApplication.($Exclude[0]) -match [regex]::Escape($Exclude[1])) {
 								[boolean]$addAppToRemoveList = $false
 								Write-Log -Message "Skipping removal of application [$($installedApplication.DisplayName) $($installedApplication.Version)] because of regex match against [-ExcludeFromUninstall] criteria." -Source ${CmdletName}
 							}
 						}
-						ElseIf ($Exclude[0][2] -eq 'WildCard') {
-							If ($installedApplication.($Exclude[0][0]) -like $Exclude[0][1]) {
+						ElseIf ($Exclude[2] -eq 'WildCard') {
+							If ($installedApplication.($Exclude[0]) -like $Exclude[1]) {
 								[boolean]$addAppToRemoveList = $false
 								Write-Log -Message "Skipping removal of application [$($installedApplication.DisplayName) $($installedApplication.Version)] because of wildcard match against [-ExcludeFromUninstall] criteria." -Source ${CmdletName}
 							}
 						}
-						ElseIf ($Exclude[0][2] -eq 'Exact') {
-							If ($installedApplication.($Exclude[0][0]) -eq $Exclude[0][1]) {
+						ElseIf ($Exclude[2] -eq 'Exact') {
+							If ($installedApplication.($Exclude[0]) -eq $Exclude[1]) {
 								[boolean]$addAppToRemoveList = $false
 								Write-Log -Message "Skipping removal of application [$($installedApplication.DisplayName) $($installedApplication.Version)] because of exact match against [-ExcludeFromUninstall] criteria." -Source ${CmdletName}
 							}
@@ -2543,6 +2578,7 @@ Function Remove-MSIApplications {
 		If ($LoggingOptions) { $ExecuteMSISplat.Add( 'LoggingOptions', $LoggingOptions) }
 		If ($LogName) { $ExecuteMSISplat.Add( 'LogName', $LogName) }
 		If ($PassThru) { $ExecuteMSISplat.Add( 'PassThru', $PassThru) }
+		If ($IncludeUpdatesAndHotfixes) { $ExecuteMSISplat.Add( 'IncludeUpdatesAndHotfixes', $IncludeUpdatesAndHotfixes) }
 		
 		If (($null -ne $removeMSIApplications) -and ($removeMSIApplications.Count)) {
 			ForEach ($removeMSIApplication in $removeMSIApplications) {
@@ -2596,7 +2632,7 @@ Function Execute-Process {
 	Returns ExitCode, STDOut, and STDErr output from the process.
 .PARAMETER WaitForMsiExec
 	Sometimes an EXE bootstrapper will launch an MSI install. In such cases, this variable will ensure that
-	that this function waits for the msiexec engine to become available before starting the install.
+	this function waits for the msiexec engine to become available before starting the install.
 .PARAMETER MsiExecWaitTime
 	Specify the length of time in seconds to wait for the msiexec engine to become available. Default: 600 seconds (10 minutes).
 .PARAMETER IgnoreExitCodes
@@ -3143,21 +3179,23 @@ Function Remove-Folder {
 		Write-FunctionHeaderOrFooter -CmdletName ${CmdletName} -CmdletBoundParameters $PSBoundParameters -Header
 	}
 	Process {
-		Try {
 			If (Test-Path -LiteralPath $Path -PathType 'Container') {
-				Write-Log -Message "Delete folder(s) and file(s) recursively from path [$path]..." -Source ${CmdletName}
-				$null = Remove-Item -LiteralPath $Path -Force -Recurse -ErrorAction 'Stop'
+				Try {
+					Remove-Item -LiteralPath $Path -Force -Recurse -ErrorAction 'SilentlyContinue' -ErrorVariable '+ErrorRemoveFolder'
+					If ($ErrorRemoveFolder) {
+						Write-Log -Message "The following error(s) took place while deleting folder(s) and file(s) recursively from path [$path]. `n$(Resolve-Error -ErrorRecord $ErrorRemoveFolder)" -Severity 2 -Source ${CmdletName}
+					}		
+				}
+				Catch {
+					Write-Log -Message "Failed to delete folder(s) and file(s) recursively from path [$path]. `n$(Resolve-Error)" -Severity 3 -Source ${CmdletName}
+					If (-not $ContinueOnError) {
+						Throw "Failed to delete folder(s) and file(s) recursively from path [$path]: $($_.Exception.Message)"
+					}
+				}
 			}
 			Else {
 				Write-Log -Message "Folder [$Path] does not exists..." -Source ${CmdletName}
 			}
-		}
-		Catch {
-			Write-Log -Message "Failed to delete folder(s) and file(s) recursively from path [$path]. `n$(Resolve-Error)" -Severity 3 -Source ${CmdletName}
-			If (-not $ContinueOnError) {
-				Throw "Failed to delete folder(s) and file(s) recursively from path [$path]: $($_.Exception.Message)"
-			}
-		}
 	}
 	End {
 		Write-FunctionHeaderOrFooter -CmdletName ${CmdletName} -Footer
@@ -3531,6 +3569,8 @@ Function Get-RegistryKey {
 	Specify this parameter from the Invoke-HKCURegistrySettingsForAllUsers function to read/edit HKCU registry settings for all users on the system.
 .PARAMETER ReturnEmptyKeyIfExists
 	Return the registry key if it exists but it has no property/value pairs underneath it. Default is: $false.
+.PARAMETER DoNotExpandEnvironmentNames
+	Return unexpanded REG_EXPAND_SZ values. Default is: $false.	
 .PARAMETER ContinueOnError
 	Continue if an error is encountered. Default is: $true.
 .EXAMPLE
@@ -3539,6 +3579,11 @@ Function Get-RegistryKey {
 	Get-RegistryKey -Key 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\iexplore.exe'
 .EXAMPLE
 	Get-RegistryKey -Key 'HKLM:Software\Wow6432Node\Microsoft\Microsoft SQL Server Compact Edition\v3.5' -Value 'Version'
+.EXAMPLE
+	Get-RegistryKey -Key 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Value 'Path' -DoNotExpandEnvironmentNames 
+	Returns %ProgramFiles%\Java instead of C:\Program Files\Java
+.EXAMPLE
+	Get-RegistryKey -Key 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Example' -Value '(Default)'
 .NOTES
 .LINK
 	http://psappdeploytoolkit.com
@@ -3556,7 +3601,10 @@ Function Get-RegistryKey {
 		[string]$SID,
 		[Parameter(Mandatory=$false)]
 		[ValidateNotNullorEmpty()]
-		[switch]$ReturnEmptyKeyIfExists,
+		[switch]$ReturnEmptyKeyIfExists = $false,
+		[Parameter(Mandatory=$false)]
+		[ValidateNotNullorEmpty()]
+		[switch]$DoNotExpandEnvironmentNames = $false,
 		[Parameter(Mandatory=$false)]
 		[ValidateNotNullOrEmpty()]
 		[boolean]$ContinueOnError = $true
@@ -3608,7 +3656,20 @@ Function Get-RegistryKey {
 					
 					#  Get the Value (do not make a strongly typed variable because it depends entirely on what kind of value is being read)
 					If ($IsRegistryValueExists) {
-						$regKeyValue = $regKeyValue | Select-Object -ExpandProperty $Value -ErrorAction 'SilentlyContinue'
+						If ($DoNotExpandEnvironmentNames) { #Only useful on 'ExpandString' values
+							If ($Value -like '(Default)') {
+								$regKeyValue = $(Get-Item -LiteralPath $key -ErrorAction 'Stop').GetValue($null,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+							}
+							Else {
+								$regKeyValue = $(Get-Item -LiteralPath $key -ErrorAction 'Stop').GetValue($Value,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)	
+							}							
+						}
+						ElseIf ($Value -like '(Default)') {
+							$regKeyValue = $(Get-Item -LiteralPath $key -ErrorAction 'Stop').GetValue($null)
+						}
+						Else {
+							$regKeyValue = $regKeyValue | Select-Object -ExpandProperty $Value -ErrorAction 'SilentlyContinue'
+						}
 					}
 					Else {
 						Write-Log -Message "Registry key value [$Key] [$Value] does not exist. Return `$null." -Source ${CmdletName}
@@ -3629,7 +3690,7 @@ Function Get-RegistryKey {
 					}
 				}
 			}
-			Write-Output -InputObject $regKeyValue
+			Write-Output -InputObject ($regKeyValue)
 		}
 		Catch {
 			If (-not $Value) {
@@ -3677,6 +3738,10 @@ Function Set-RegistryKey {
 	Set-RegistryKey -Key $blockedAppPath -Name 'Debugger' -Value $blockedAppDebuggerValue
 .EXAMPLE
 	Set-RegistryKey -Key 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Name 'Debugger' -Value $blockedAppDebuggerValue -Type String
+.EXAMPLE
+	Set-RegistryKey -Key 'HKCU\Software\Microsoft\Example' -Name 'Data' -Value (0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x02,0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x02,0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x00,0x01,0x01,0x01,0x02,0x02,0x02) -Type 'Binary'
+.EXAMPLE
+    Set-RegistryKey -Key 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Example' -Value '(Default)'
 .NOTES
 .LINK
 	http://psappdeploytoolkit.com
@@ -3719,6 +3784,9 @@ Function Set-RegistryKey {
 				[string]$key = Convert-RegistryPath -Key $key
 			}
 			
+			## Replace forward slash character to allow forward slash in name of registry key rather than creating new subkey
+			$key = $key.Replace('/',"$([char]0x2215)")
+			
 			## Create registry key if it doesn't exist
 			If (-not (Test-Path -LiteralPath $key -ErrorAction 'Stop')) {
 				Try {
@@ -3739,8 +3807,14 @@ Function Set-RegistryKey {
 				## Update registry value if it does exist
 				Else {
 					[string]$RegistryValueWriteAction = 'update'
-					Write-Log -Message "Update registry key value: [$key] [$name = $value]." -Source ${CmdletName}
-					$null = Set-ItemProperty -LiteralPath $key -Name $name -Value $value -ErrorAction 'Stop'
+					If ($Name -eq '(Default)') {
+						## Set Default registry key value with the following workaround, because Set-ItemProperty contains a bug and cannot set Default registry key value
+						$null = $(Get-Item -LiteralPath $key -ErrorAction 'Stop').OpenSubKey('','ReadWriteSubTree').SetValue($null,$value)
+					} 
+					Else {
+						Write-Log -Message "Update registry key value: [$key] [$name = $value]." -Source ${CmdletName}
+						$null = Set-ItemProperty -LiteralPath $key -Name $name -Value $value -ErrorAction 'Stop'
+					}
 				}
 			}
 		}
@@ -3832,8 +3906,8 @@ Function Remove-RegistryKey {
 						$null = Remove-Item -LiteralPath $Key -Force -Recurse -ErrorAction 'Stop'
 					}
 					Else {
-						If($null -eq (Get-ChildItem -LiteralPath $Key -ErrorAction 'Stop')){
-							## Check if there are subkeys of $Key, if so, executing remove-item will hang. Avoiding this with Get-ChildItem.
+						If ($null -eq (Get-ChildItem -LiteralPath $Key -ErrorAction 'Stop')){
+							## Check if there are subkeys of $Key, if so, executing Remove-Item will hang. Avoiding this with Get-ChildItem.
 							Write-Log -Message "Delete registry key [$Key]." -Source ${CmdletName}
 							$null = Remove-Item -LiteralPath $Key -Force -ErrorAction 'Stop'
 						}
@@ -3849,7 +3923,14 @@ Function Remove-RegistryKey {
 			Else {
 				If (Test-Path -LiteralPath $Key -ErrorAction 'Stop') {
 					Write-Log -Message "Delete registry value [$Key] [$Name]." -Source ${CmdletName}
-					$null = Remove-ItemProperty -LiteralPath $Key -Name $Name -Force -ErrorAction 'Stop'
+					
+					If ($Name -eq '(Default)') {
+						## Remove (Default) registry key value with the following workaround because Remove-ItemProperty cannot remove the (Default) registry key value
+						$null = (Get-Item -LiteralPath $Key -ErrorAction 'Stop').OpenSubKey('','ReadWriteSubTree').DeleteValue('')
+					}
+					Else {
+						$null = Remove-ItemProperty -LiteralPath $Key -Name $Name -Force -ErrorAction 'Stop'
+					}
 				}
 				Else {
 					Write-Log -Message "Unable to delete registry value [$Key] [$Name] because registry key does not exist." -Severity 2 -Source ${CmdletName}
@@ -4181,7 +4262,7 @@ Function Get-UserProfiles {
 				[string]$UserProfilesDirectory = Get-ItemProperty -LiteralPath $UserProfileListRegKey -Name 'ProfilesDirectory' -ErrorAction 'Stop' | Select-Object -ExpandProperty 'ProfilesDirectory'
 				
 				#  On Windows Vista or higher
-				If ([Environment]::OSVersion.Version.Major -gt 5) {
+				If (([version]$envOSVersion).Major -gt 5) {
 					# Path to Default User Profile directory on Windows Vista or higher: By default, C:\Users\Default
 					[string]$DefaultUserProfileDirectory = Get-ItemProperty -LiteralPath $UserProfileListRegKey -Name 'Default' -ErrorAction 'Stop' | Select-Object -ExpandProperty 'Default'
 				}
@@ -4418,7 +4499,7 @@ Function New-Shortcut {
 					$Reader.Close()
 					$Writer.Close()
 					$Path.Delete()
-					$null = Rename-Item -LiteralPath $TempFile -NewName $Path.Name -Force -ErrorAction 'Stop'
+					$null = Rename-Item -Path $TempFile -NewName $Path.Name -Force -ErrorAction 'Stop'
 				}
 			}
 		}
@@ -4449,6 +4530,8 @@ Function Execute-ProcessAsUser {
 	Path to the file being executed.
 .PARAMETER Parameters
 	Arguments to be passed to the file being executed.
+.PARAMETER SecureParameters
+	Hides all parameters passed to the executable from the Toolkit log file.
 .PARAMETER RunLevel
 	Specifies the level of user rights that Task Scheduler uses to run the task. The acceptable values for this parameter are:
 	- HighestAvailable: Tasks run by using the highest available privileges (Admin privileges for Administrators). Default Value.
@@ -4480,6 +4563,8 @@ Function Execute-ProcessAsUser {
 		[Parameter(Mandatory=$false)]
 		[ValidateNotNullorEmpty()]
 		[string]$Parameters = '',
+		[Parameter(Mandatory=$false)]
+		[switch]$SecureParameters = $false,
 		[Parameter(Mandatory=$false)]
 		[ValidateSet('HighestAvailable','LeastPrivilege')]
 		[string]$RunLevel = 'HighestAvailable',
@@ -4605,7 +4690,12 @@ Function Execute-ProcessAsUser {
 		
 		## Create Scheduled Task to run the process with a logged-on user account
 		If ($Parameters) {
-			Write-Log -Message "Create scheduled task to run the process [$Path $Parameters] as the logged-on user [$userName]..." -Source ${CmdletName}
+			If ($SecureParameters) {
+				Write-Log -Message "Create scheduled task to run the process [$Path] (Parameters Hidden) as the logged-on user [$userName]..." -Source ${CmdletName}
+			}
+			Else {
+				Write-Log -Message "Create scheduled task to run the process [$Path $Parameters] as the logged-on user [$userName]..." -Source ${CmdletName}	
+			}			
 		}
 		Else {
 			Write-Log -Message "Create scheduled task to run the process [$Path] as the logged-on user [$userName]..." -Source ${CmdletName}
@@ -4624,7 +4714,12 @@ Function Execute-ProcessAsUser {
 		
 		## Trigger the Scheduled Task
 		If ($Parameters) {
-			Write-Log -Message "Trigger execution of scheduled task with command [$Path $Parameters] as the logged-on user [$userName]..." -Source ${CmdletName}
+			If ($SecureParameters) {
+				Write-Log -Message "Trigger execution of scheduled task with command [$Path] (Parameters Hidden) as the logged-on user [$userName]..." -Source ${CmdletName}
+			}
+			Else {
+				Write-Log -Message "Trigger execution of scheduled task with command [$Path $Parameters] as the logged-on user [$userName]..." -Source ${CmdletName}
+			}
 		}
 		Else {
 			Write-Log -Message "Trigger execution of scheduled task with command [$Path] as the logged-on user [$userName]..." -Source ${CmdletName}
@@ -4919,7 +5014,7 @@ Function Block-AppExecution {
 		[char[]]$invalidScheduledTaskChars = '$', '!', '''', '"', '(', ')', ';', '\', '`', '*', '?', '{', '}', '[', ']', '<', '>', '|', '&', '%', '#', '~', '@'
 		[string]$SchInstallName = $installName
 		ForEach ($invalidChar in $invalidScheduledTaskChars) { [string]$SchInstallName = $SchInstallName -replace [regex]::Escape($invalidChar),'' }
-		[string]$schTaskUnblockAppsCommand += "-ExecutionPolicy Bypass -NoProfile -NoLogo -WindowStyle Hidden -File `"$dirAppDeployTemp\$scriptFileName`" -CleanupBlockedApps -ReferrredInstallName `"$SchInstallName`" -ReferredInstallTitle `"$installTitle`" -ReferredLogName `"$logName`" -AsyncToolkitLaunch"
+		[string]$schTaskUnblockAppsCommand += "-ExecutionPolicy Bypass -NoProfile -NoLogo -WindowStyle Hidden -File `"$dirAppDeployTemp\$scriptFileName`" -CleanupBlockedApps -ReferredInstallName `"$SchInstallName`" -ReferredInstallTitle `"$installTitle`" -ReferredLogName `"$logName`" -AsyncToolkitLaunch"
 		## Specify the scheduled task configuration in XML format
 		[string]$xmlUnblockAppsSchTask = @"
 <?xml version="1.0" encoding="UTF-16"?>
@@ -6689,7 +6784,7 @@ Function Show-BalloonTip {
 	Process {
 		## Skip balloon if in silent mode
 		If (($deployModeSilent) -or (-not $configShowBalloonNotifications) -or (Test-PowerPoint)) { Return }
-		
+
 		## Dispose of previous balloon
 		If ($script:notifyIcon) { Try { $script:notifyIcon.Dispose() } Catch {} }
 		
@@ -7097,17 +7192,29 @@ Function Set-PinnedApplication {
 				}
 			}
 			Catch {
-				Write-Log -Message "Failed to perform action [$verb] on [$FilePath]. `n$(Resolve-Error)" -Severity 3 -Source ${CmdletName}
+				Write-Log -Message "Failed to perform action [$verb] on [$FilePath]. `n$(Resolve-Error)" -Severity 2 -Source ${CmdletName}
 			}
 		}
 		#endregion
 		
-		[hashtable]$Verbs = @{
+		If (([version]$envOSVersion).Major -ge 10) {
+			Write-Log -Message "Detected Windows 10 or higher, using Windows 10 verb codes." -Source ${CmdletName}
+			[hashtable]$Verbs = @{
+				'PintoStartMenu' = 51201
+				'UnpinfromStartMenu' = 51394
+				'PintoTaskbar' = 5386
+				'UnpinfromTaskbar' = 5387
+			}
+		}
+		Else {
+			[hashtable]$Verbs = @{
 			'PintoStartMenu' = 5381
 			'UnpinfromStartMenu' = 5382
 			'PintoTaskbar' = 5386
 			'UnpinfromTaskbar' = 5387
+			}
 		}
+		
 	}
 	Process {
 		Try {
@@ -7129,7 +7236,7 @@ Function Set-PinnedApplication {
 			Invoke-Verb -FilePath $FilePath -Verb $PinVerbAction
 		}
 		Catch {
-			Write-Log -Message "Failed to execute action [$Action]. `n$(Resolve-Error)" -Severity 3 -Source ${CmdletName}
+			Write-Log -Message "Failed to execute action [$Action]. `n$(Resolve-Error)" -Severity 2 -Source ${CmdletName}
 		}
 	}
 	End {
@@ -8056,41 +8163,48 @@ Function Test-MSUpdates {
 			## Default is not found
 			[boolean]$kbFound = $false
 			
-			## Check for update using ComObject method (to catch Office updates)
-			[__comobject]$UpdateSession = New-Object -ComObject "Microsoft.Update.Session"
-			[__comobject]$UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
-			#  Indicates whether the search results include updates that are superseded by other updates in the search results
-			$UpdateSearcher.IncludePotentiallySupersededUpdates = $false
-			#  Indicates whether the UpdateSearcher goes online to search for updates.
-			$UpdateSearcher.Online = $false
-			[int32]$UpdateHistoryCount = $UpdateSearcher.GetTotalHistoryCount()
-			If ($UpdateHistoryCount -gt 0) {
-				[psobject]$UpdateHistory = $UpdateSearcher.QueryHistory(0, $UpdateHistoryCount) |
-								Select-Object -Property 'Title','Date',
-														@{Name = 'Operation'; Expression = { Switch ($_.Operation) { 1 {'Installation'}; 2 {'Uninstallation'}; 3 {'Other'} } } },
-														@{Name = 'Status'; Expression = { Switch ($_.ResultCode) { 0 {'Not Started'}; 1 {'In Progress'}; 2 {'Successful'}; 3 {'Incomplete'}; 4 {'Failed'}; 5 {'Aborted'} } } },
-														'Description' |
-								Sort-Object -Property 'Date' -Descending
-				ForEach ($Update in $UpdateHistory) {
-					If (($Update.Operation -ne 'Other') -and ($Update.Title -match $KBNumber)) {
-						$LatestUpdateHistory = $Update
-						Break
-					}
-				}
-				If (($LatestUpdateHistory.Operation -eq 'Installation') -and ($LatestUpdateHistory.Status -eq 'Successful')) {
-					Write-Log -Message "Discovered the following Microsoft Update: `n$($LatestUpdateHistory | Format-List | Out-String)" -Source ${CmdletName}
-					$kbFound = $true
-				}
-				$null = [Runtime.Interopservices.Marshal]::ReleaseComObject($UpdateSession)
-				$null = [Runtime.Interopservices.Marshal]::ReleaseComObject($UpdateSearcher)
+			## Check for update using built in PS cmdlet which uses WMI in the background to gather details
+			If ([int]$envPSVersionMajor -ge 3) {
+				Get-Hotfix -Id $kbNumber -ErrorAction 'SilentlyContinue' | ForEach-Object { $kbFound = $true }
 			}
 			Else {
-				Write-Log -Message "Unable to detect Windows update history via COM object. Trying via the Get-Hotfix CmdLet." -Source ${CmdletName}
+				Write-Log -Message 'Older version of Powershell detected, Get-Hotfix cmdlet is not supported.' -Source ${CmdletName}
 			}
-
-			## Check for update using built in PS cmdlet which uses WMI in the background to gather details
+						
 			If (-not $kbFound) {
-				Get-Hotfix -Id $kbNumber -ErrorAction 'SilentlyContinue' | ForEach-Object { $kbFound = $true }
+				Write-Log -Message 'Unable to detect Windows update history via Get-Hotfix cmdlet. Trying via COM object.' -Source ${CmdletName}
+			
+				## Check for update using ComObject method (to catch Office updates)
+				[__comobject]$UpdateSession = New-Object -ComObject "Microsoft.Update.Session"
+				[__comobject]$UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
+				#  Indicates whether the search results include updates that are superseded by other updates in the search results
+				$UpdateSearcher.IncludePotentiallySupersededUpdates = $false
+				#  Indicates whether the UpdateSearcher goes online to search for updates.
+				$UpdateSearcher.Online = $false
+				[int32]$UpdateHistoryCount = $UpdateSearcher.GetTotalHistoryCount()
+				If ($UpdateHistoryCount -gt 0) {
+					[psobject]$UpdateHistory = $UpdateSearcher.QueryHistory(0, $UpdateHistoryCount) |
+									Select-Object -Property 'Title','Date',
+															@{Name = 'Operation'; Expression = { Switch ($_.Operation) { 1 {'Installation'}; 2 {'Uninstallation'}; 3 {'Other'} } } },
+															@{Name = 'Status'; Expression = { Switch ($_.ResultCode) { 0 {'Not Started'}; 1 {'In Progress'}; 2 {'Successful'}; 3 {'Incomplete'}; 4 {'Failed'}; 5 {'Aborted'} } } },
+															'Description' |
+									Sort-Object -Property 'Date' -Descending
+					ForEach ($Update in $UpdateHistory) {
+						If (($Update.Operation -ne 'Other') -and ($Update.Title -match "\($KBNumber\)")) {
+							$LatestUpdateHistory = $Update
+							Break
+						}
+					}
+					If (($LatestUpdateHistory.Operation -eq 'Installation') -and ($LatestUpdateHistory.Status -eq 'Successful')) {
+						Write-Log -Message "Discovered the following Microsoft Update: `n$($LatestUpdateHistory | Format-List | Out-String)" -Source ${CmdletName}
+						$kbFound = $true
+					}
+					$null = [Runtime.Interopservices.Marshal]::ReleaseComObject($UpdateSession)
+					$null = [Runtime.Interopservices.Marshal]::ReleaseComObject($UpdateSearcher)
+				}
+				Else {
+					Write-Log -Message 'Unable to detect Windows update history via COM object.' -Source ${CmdletName}
+				}
 			}
 			
 			## Return Result
@@ -8660,7 +8774,7 @@ Function Test-PowerPoint {
 					}
 					
 					## If previous detection method did not detect PowerPoint in fullscreen mode, then check if PowerPoint is in Presentation Mode (check only works on Windows Vista or higher)
-					If ((-not $IsPowerPointFullScreen) -and ([Environment]::OSVersion.Version.Major -gt 5)) {
+					If ((-not $IsPowerPointFullScreen) -and (([version]$envOSVersion).Major -gt 5)) {
 						#  Note: below method does not detect PowerPoint presentation mode if the presentation is on a monitor that does not have current mouse input control
 						[string]$UserNotificationState = [PSADT.UiAutomation]::GetUserNotificationState()
 						Write-Log -Message "Detected user notification state [$UserNotificationState]." -Source ${CmdletName}
@@ -9234,7 +9348,7 @@ Function Set-ActiveSetup {
 				}
 				'.ps1' {
 					[string]$CUStubExePath = "$PSHOME\powershell.exe"
-					[string]$CUArguments = "-ExecutionPolicy Bypass -NoProfile -NoLogo -WindowStyle Hidden -File `"$StubExePath`""
+					[string]$CUArguments = "-ExecutionPolicy Bypass -NoProfile -NoLogo -WindowStyle Hidden -Command & { & `\`"$StubExePath`\`"}"
 					[string]$StubPath = "$CUStubExePath $CUArguments"
 				}
 			}
@@ -9687,7 +9801,7 @@ Function Get-ServiceStartMode
 			If ($ServiceStartMode -eq 'Auto') { $ServiceStartMode = 'Automatic'}
 			
 			## If on Windows Vista or higher, check to see if service is set to Automatic (Delayed Start)
-			If (($ServiceStartMode -eq 'Automatic') -and ([Environment]::OSVersion.Version.Major -gt 5)) {
+			If (($ServiceStartMode -eq 'Automatic') -and (([version]$envOSVersion).Major -gt 5)) {
 				Try {
 					[string]$ServiceRegistryPath = "HKLM:SYSTEM\CurrentControlSet\Services\$Name"
 					[int32]$DelayedAutoStart = Get-ItemProperty -LiteralPath $ServiceRegistryPath -ErrorAction 'Stop' | Select-Object -ExpandProperty 'DelayedAutoStart' -ErrorAction 'Stop'
@@ -9757,7 +9871,7 @@ Function Set-ServiceStartMode
 	Process {
 		Try {
 			## If on lower than Windows Vista and 'Automatic (Delayed Start)' selected, then change to 'Automatic' because 'Delayed Start' is not supported.
-			If (($StartMode -eq 'Automatic (Delayed Start)') -and ([Environment]::OSVersion.Version.Major -lt 6)) { $StartMode = 'Automatic' }
+			If (($StartMode -eq 'Automatic (Delayed Start)') -and (([version]$envOSVersion).Major -lt 6)) { $StartMode = 'Automatic' }
 			
 			Write-Log -Message "Set service [$Name] startup mode to [$StartMode]." -Source ${CmdletName}
 			
@@ -9903,7 +10017,7 @@ Function Get-PendingReboot {
 		
 		## Determine if a Windows Vista/Server 2008 and above machine has a pending reboot from a Component Based Servicing (CBS) operation
 		Try {
-			If ([Environment]::OSVersion.Version.Major -ge 5) {
+			If (([version]$envOSVersion).Major -ge 5) {
 				If (Test-Path -LiteralPath 'HKLM:SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending' -ErrorAction 'Stop') {
 					[nullable[boolean]]$IsCBServicingRebootPending = $true
 				}
@@ -9951,31 +10065,28 @@ Function Get-PendingReboot {
 		
 		## Determine SCCM 2012 Client reboot pending status
 		Try {
-			Try {
-				[boolean]$IsSccmClientNamespaceExists = [boolean](Get-WmiObject -Namespace 'ROOT\CCM\ClientSDK' -List -ErrorAction 'Stop' | Where-Object { $_.Name -eq 'CCM_ClientUtilities' })
-			}
-			Catch [System.Management.ManagementException] {
-				$CmdException = $_
-				If ($CmdException.FullyQualifiedErrorId -eq 'INVALID_NAMESPACE_IDENTIFIER,Microsoft.PowerShell.Commands.GetWmiObjectCommand') {
-					[boolean]$IsSccmClientNamespaceExists = $false
-				}
-			}
-			
-			If ($IsSccmClientNamespaceExists) {
-				[psobject]$SCCMClientRebootStatus = Invoke-WmiMethod -ComputerName $ComputerName -NameSpace 'ROOT\CCM\ClientSDK' -Class 'CCM_ClientUtilities' -Name 'DetermineIfRebootPending' -ErrorAction 'Stop'
-				If ($SCCMClientRebootStatus.ReturnValue -ne 0) {
-					Throw "'DetermineIfRebootPending' method of 'ROOT\CCM\ClientSDK\CCM_ClientUtilities' class returned error code [$($SCCMClientRebootStatus.ReturnValue)]"
-				}
-				Else {
-					[nullable[boolean]]$IsSCCMClientRebootPending = $false
-					If ($SCCMClientRebootStatus.IsHardRebootPending -or $SCCMClientRebootStatus.RebootPending) {
-						[nullable[boolean]]$IsSCCMClientRebootPending = $true
-					}
-				}
+			[boolean]$IsSccmClientNamespaceExists = $false
+			[psobject]$SCCMClientRebootStatus = Invoke-WmiMethod -ComputerName $ComputerName -NameSpace 'ROOT\CCM\ClientSDK' -Class 'CCM_ClientUtilities' -Name 'DetermineIfRebootPending' -ErrorAction 'Stop'
+			[boolean]$IsSccmClientNamespaceExists = $true
+			If ($SCCMClientRebootStatus.ReturnValue -ne 0) {
+				Throw "'DetermineIfRebootPending' method of 'ROOT\CCM\ClientSDK\CCM_ClientUtilities' class returned error code [$($SCCMClientRebootStatus.ReturnValue)]"
 			}
 			Else {
-				[nullable[boolean]]$IsSCCMClientRebootPending = $null
+				Write-Log -Message 'Successfully queried SCCM client for reboot status.' -Source ${CmdletName}
+				[nullable[boolean]]$IsSCCMClientRebootPending = $false
+				If ($SCCMClientRebootStatus.IsHardRebootPending -or $SCCMClientRebootStatus.RebootPending) {
+					[nullable[boolean]]$IsSCCMClientRebootPending = $true
+					Write-Log -Message 'Pending SCCM reboot detected.' -Source ${CmdletName}
+				}
+				Else {
+					Write-Log -Message 'Pending SCCM reboot not detected.' -Source ${CmdletName}
+				}
 			}
+		}
+		Catch [System.Management.ManagementException] {
+			[nullable[boolean]]$IsSCCMClientRebootPending = $null
+			[boolean]$IsSccmClientNamespaceExists = $false
+			Write-Log -Message "Failed to get IsSCCMClientRebootPending. Failed to detect the SCCM client WMI class." -Severity 3 -Source ${CmdletName}
 		}
 		Catch {
 			[nullable[boolean]]$IsSCCMClientRebootPending = $null
@@ -10489,8 +10600,8 @@ If ($terminalServerMode) { Enable-TerminalServerInstallMode }
 # SIG # Begin signature block
 # MIIU4wYJKoZIhvcNAQcCoIIU1DCCFNACAQExDzANBglghkgBZQMEAgEFADB5Bgor
 # BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
-# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCBllVdAtWseZPsa
-# kRCOPFCBYe2f1CFT7Pw9J6GF2F8QvaCCD4cwggQUMIIC/KADAgECAgsEAAAAAAEv
+# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCCjTKROXVOO32hU
+# v91WEarMJzHRjiwj4yhVw7wnV1BiPqCCD4cwggQUMIIC/KADAgECAgsEAAAAAAEv
 # TuFS1zANBgkqhkiG9w0BAQUFADBXMQswCQYDVQQGEwJCRTEZMBcGA1UEChMQR2xv
 # YmFsU2lnbiBudi1zYTEQMA4GA1UECxMHUm9vdCBDQTEbMBkGA1UEAxMSR2xvYmFs
 # U2lnbiBSb290IENBMB4XDTExMDQxMzEwMDAwMFoXDTI4MDEyODEyMDAwMFowUjEL
@@ -10577,26 +10688,26 @@ If ($terminalServerMode) { Enable-TerminalServerInstallMode }
 # FgNlZHUxGTAXBgoJkiaJk/IsZAEZFgltc3VkZW52ZXIxFTATBgoJkiaJk/IsZAEZ
 # FgV3aW5hZDEZMBcGA1UEAxMQd2luYWQtVk1XQ0EwMS1DQQITfwAAACITuo77mvOv
 # 9AABAAAAIjANBglghkgBZQMEAgEFAKBmMBgGCisGAQQBgjcCAQwxCjAIoAKAAKEC
-# gAAwGQYJKoZIhvcNAQkDMQwGCisGAQQBgjcCAQQwLwYJKoZIhvcNAQkEMSIEIIeX
-# Z1CM59LM2YB8lszTHFY1xsg3XeraxBvl1YfrZC5gMA0GCSqGSIb3DQEBAQUABIIB
-# ADveABXcsYI41m4SPclv2sf+yb6V9QO1ut4nFYbMv4SVSH4Iuohlub0XJaFQgj2/
-# ZHDBHjSKXYvqCOmR0bLH73zopUw073dTdqG+IUkCPXoFN4uX9PXRR5I+MExFZc5M
-# PyZbuc0NFkaSNkCgONwTKQpQWj8N5vo8cFcb3wVCMPA40tkMCg0+bXHv7PF++0M1
-# mLda5rN82WBy9NadLmf36YqZYiH1jjmVPP7JwxeUwuB4wQBFXvBs7+Wf36KNNROk
-# C6mLdBsU4jqoR9I90o+7mwY3uzNoBZ00Qx1Aaj3v7Rkk8HFhYW0lXMJyiDZ7yI9B
-# j2cCwSYlgAYdfr9DndXwMrGhggKiMIICngYJKoZIhvcNAQkGMYICjzCCAosCAQEw
+# gAAwGQYJKoZIhvcNAQkDMQwGCisGAQQBgjcCAQQwLwYJKoZIhvcNAQkEMSIEIGDh
+# s1stzyw0yjso88q9RLpHPg7djfaNuPkfNlguEmcWMA0GCSqGSIb3DQEBAQUABIIB
+# ADug0PzsVB1Q3P2p1z9Wcv/XQYQBb1z5EUnIaLAH5WnA84S8hCrbiuGkJudyMk1S
+# E7CQsFskQZ7lFhY1jtTXWUtmCZhe83gcVg2GWrrIZB+SyhRJqyaXKhxgVzAEpYQh
+# 8Z7g/CZXPBOZovA3grjcSLiuBWALz50ACr6W369upXKvrX/KINq/ucG4uIlMOWlj
+# bDKyPKE0yYop3Z6tynQc8JvJ4oGUruucIcm4tSRy2touKdVNs9AKlUKfcAQUDC1c
+# OisFGrXPUbgawOjJbLe0dHnklSpkpxMt1ctFma2oxNAN1bdZoPl7tm0twmf0hmgf
+# iYBhuqJoh1pPN4//4ETZUZWhggKiMIICngYJKoZIhvcNAQkGMYICjzCCAosCAQEw
 # aDBSMQswCQYDVQQGEwJCRTEZMBcGA1UEChMQR2xvYmFsU2lnbiBudi1zYTEoMCYG
 # A1UEAxMfR2xvYmFsU2lnbiBUaW1lc3RhbXBpbmcgQ0EgLSBHMgISESHWmadklz7x
 # +EJ+6RnMU0EUMAkGBSsOAwIaBQCggf0wGAYJKoZIhvcNAQkDMQsGCSqGSIb3DQEH
-# ATAcBgkqhkiG9w0BCQUxDxcNMTYwODE1MTgzOTUwWjAjBgkqhkiG9w0BCQQxFgQU
-# +mYbAtWioAlg01hBnZ6EZmnZsO8wgZ0GCyqGSIb3DQEJEAIMMYGNMIGKMIGHMIGE
+# ATAcBgkqhkiG9w0BCQUxDxcNMTcwMjIyMTU1MjU2WjAjBgkqhkiG9w0BCQQxFgQU
+# wN6hUiuUUeofcLl74sKB+5Ar+zEwgZ0GCyqGSIb3DQEJEAIMMYGNMIGKMIGHMIGE
 # BBRjuC+rYfWDkJaVBQsAJJxQKTPseTBsMFakVDBSMQswCQYDVQQGEwJCRTEZMBcG
 # A1UEChMQR2xvYmFsU2lnbiBudi1zYTEoMCYGA1UEAxMfR2xvYmFsU2lnbiBUaW1l
 # c3RhbXBpbmcgQ0EgLSBHMgISESHWmadklz7x+EJ+6RnMU0EUMA0GCSqGSIb3DQEB
-# AQUABIIBADw7yi7jr+p7xxJhE+d6MOGOaahWJ6HSoYllxw1eqkPF1rIS+utN9hLw
-# NJVRfB1P6AEazPdv0Z5NAbR0ym4plAnDuMopTy1SQnzAdZSPEGKA/EWbP/RpVVPJ
-# f3RgY0F/u2KPkGsEPHzIeHMyT3SpZVUgb+qeVy1ZmX+dd5eI7oVMEq/yha7Tcuzu
-# YAEeOGGmQqvGt0mtbkdZwpfUm7lCsdos/ZXAQYJLokj+c4EdrKnk6/QDVNbCVQBk
-# 1Tb1Yl/fnOMzaGYrty46B/Y/J/InZZRXiFiZKU1NCHKanYZS3xL3KiXHLP79u31q
-# VwhGbLPtGTPSjJNBEZTVZmDCSGT1jlo=
+# AQUABIIBAJCHmafi8BUOkqXm1KmApS7w0UbbjFJNV6Pe5ZyDf63ufRf9kU8p1LBV
+# t0odsXdX++ufAIr1t7CqyBRTUBGA1Oa9f6LAz7gibIKO2l2Xxbi//z/kmU1vSPvn
+# MbeJEz1qSOgc5f4xwSwsMoSOng25QA1reEADDuFMNAS3e/v1Z7iCALm+U01r/LJp
+# tMUjcCcJWF98Fab2WtZv9YFQjeWagnpM3WaLAFCYHKcza1ZII70qPM9yUDyf9XE5
+# VVIANl+ubNILirFot1HBH2MokCfRDrXuQBcbK1dIHeFEnSGQ/Vlc9WBXiO/ySltF
+# sKPEQfRfjsgRaZdc6JLIVUfNRYk/sQw=
 # SIG # End signature block
